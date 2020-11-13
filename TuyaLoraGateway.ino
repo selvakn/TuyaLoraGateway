@@ -59,7 +59,7 @@ void TuyaSendResponse(uint8_t cmd, uint8_t payload[] = nullptr, uint16_t payload
   TuyaSerial.flush();
 }
 
-void ToHex_P(unsigned char * in, size_t insz, char * out, size_t outsz)
+char* ToHex_P(unsigned char * in, size_t insz, char * out, size_t outsz)
 {
   unsigned char * pin = in;
   const char * hex = "0123456789ABCDEF";
@@ -76,17 +76,18 @@ void ToHex_P(unsigned char * in, size_t insz, char * out, size_t outsz)
     }
   }
   pout[-1] = 0;
+  return out;
 }
 
 void TuyaSerialInput()
 {
-  while (TuyaSerial.available()) {
+  if (TuyaSerial.available()) {
     uint8_t serial_in_byte = TuyaSerial.read();
     if (serial_in_byte == 0x55) {            // Start TUYA Packet
       Tuya.cmd_status = 1;
       Tuya.buffer[Tuya.byte_counter++] = serial_in_byte;
       Tuya.cmd_checksum += serial_in_byte;
-//      Serial.println("start tuya 0x55");
+      Serial.println("start tuya 0x55");
     }
     else if (Tuya.cmd_status == 1 && serial_in_byte == 0xAA) { // Only packtes with header 0x55AA are valid
       Tuya.cmd_status = 2;
@@ -100,8 +101,8 @@ void TuyaSerialInput()
       if (Tuya.byte_counter == 5) { // Get length of data
         Tuya.cmd_status = 3;
         Tuya.data_len = serial_in_byte;
-//        Serial.print("found data_len: ");
-//        Serial.println(serial_in_byte);
+        Serial.print("found data_len: ");
+        Serial.println(serial_in_byte);
       }
       Tuya.cmd_checksum += serial_in_byte;
       Tuya.buffer[Tuya.byte_counter++] = serial_in_byte;
@@ -109,24 +110,16 @@ void TuyaSerialInput()
     else if ((Tuya.cmd_status == 3) && (Tuya.byte_counter == (6 + Tuya.data_len)) && (Tuya.cmd_checksum == serial_in_byte)) { // Compare checksum and process packet
       Tuya.buffer[Tuya.byte_counter++] = serial_in_byte;
 
-      char hex_char[(Tuya.byte_counter * 2) + 2];
-      uint16_t len = Tuya.buffer[4] << 8 | Tuya.buffer[5];
-
-      Serial.println("Data");
-      ToHex_P((unsigned char*)Tuya.buffer, Tuya.byte_counter, hex_char, sizeof(hex_char));
-      Serial.println(hex_char);
-
-      Serial.println("Cmnd");
-      Serial.println(Tuya.buffer[3], HEX);
-
       uint16_t DataVal = 0;
       uint8_t dpId = 0;
       uint8_t dpDataType = 0;
       char DataStr[13];
 
-      Serial.println("CmndData");
-      ToHex_P((unsigned char*)&Tuya.buffer[6], len, hex_char, sizeof(hex_char));
-      Serial.println(hex_char);
+      uint16_t len = Tuya.buffer[4] << 8 | Tuya.buffer[5];
+      char hex_char[(6 + len + 1)*3];
+
+      Serial.println("Data");      
+      Serial.println(ToHex_P((unsigned char*)Tuya.buffer, sizeof(hex_char), hex_char, sizeof(hex_char)));      
 
       if (TUYA_CMD_HEARTBEAT == Tuya.buffer[3]) {
         uint8_t payload_buffer[] = {0x01};
@@ -136,6 +129,7 @@ void TuyaSerialInput()
       if (TUYA_CMD_SET_DP == Tuya.buffer[3]) {
         //55 AA 03 07 00 0D 01 04 00 01 02 02 02 00 04 00 00 00 1A 40
         // 0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19
+        
         uint8_t dpidStart = 6;
         snprintf_P(DataStr, sizeof(DataStr), PSTR("000000000000"));
         while (dpidStart + 4 < Tuya.byte_counter) {
@@ -143,7 +137,6 @@ void TuyaSerialInput()
           dpDataType = Tuya.buffer[dpidStart + 1];
           uint16_t dpDataLen = Tuya.buffer[dpidStart + 2] << 8 | Tuya.buffer[dpidStart + 3];
           const unsigned char *dpData = (unsigned char*)&Tuya.buffer[dpidStart + 4];
-          ToHex_P(dpData, dpDataLen, hex_char, sizeof(hex_char));
 
           if (TUYA_TYPE_BOOL == dpDataType && dpDataLen == 1) {
             DataVal = dpData[0];
@@ -193,6 +186,7 @@ void TuyaSerialInput()
       Tuya.data_len = 0;
     }
   }
+
 }
 
 void onReceive(int packetSize) {
@@ -210,10 +204,8 @@ void onReceive(int packetSize) {
   while (LoRa.available()) {            // can't use readString() in callback, so
     incoming += (char)LoRa.read();      // add bytes one by one
   }
-
-
-
 }
+
 
 void setup() {
   Serial.begin(9600);
@@ -223,15 +215,14 @@ void setup() {
   LoRa.setPins(SS,RST,DI0);
 
   if (!LoRa.begin(BAND,PABOOST)) {             
+    Serial.println("Starting LoRa failed!");
     while (true);
   }
 
-  LoRa.onReceive(onReceive);
-  LoRa.receive();
   Serial.println("LoRa init succeeded.");
 }
 
 void loop() {
   TuyaSerialInput();
-  LoRa.receive();
+  onReceive(LoRa.parsePacket());
 }
