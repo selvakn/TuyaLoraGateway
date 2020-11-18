@@ -35,7 +35,7 @@ struct TUYA {
   uint16_t data_len = 0;                   // Data lenght of command
   char *buffer = nullptr;                 // Serial receive buffer
   int byte_counter = 0;                   // Index in serial receive buffer
-} Tuya;
+} TuyaSerialStruct, TuyaLoraStruct;
 
 
 void TuyaSendResponse(uint8_t cmd, uint8_t payload[] = nullptr, uint16_t payload_len = 0)
@@ -53,6 +53,23 @@ void TuyaSendResponse(uint8_t cmd, uint8_t payload[] = nullptr, uint16_t payload
   }
   TuyaSerial.write(checksum);
   TuyaSerial.flush();
+}
+
+void TuyaSendString(uint8_t id, char data[]) {
+
+  uint16_t len = strlen(data);
+  uint16_t payload_len = 4 + len;
+  uint8_t payload_buffer[payload_len];
+  payload_buffer[0] = id;
+  payload_buffer[1] = TUYA_TYPE_STRING;
+  payload_buffer[2] = len >> 8;
+  payload_buffer[3] = len & 0xFF;
+
+  for (uint16_t i = 0; i < len; i++) {
+    payload_buffer[4+i] = data[i];
+  }
+
+  TuyaSendResponse(TUYA_CMD_SET_DP, payload_buffer, payload_len);
 }
 
 char* ToHex_P(unsigned char * in, size_t insz, char * out, size_t outsz)
@@ -79,90 +96,101 @@ unsigned int setCommandPacketLength(unsigned int dataLen) {
   return 6 + dataLen + 1; // Preamble(2) + version(1) + command byte[6] (1) + lengths'lengh (2) + length(n) + checksum(1)
 }
 
-void ProcessByte(uint8_t serial_in_byte)
+void ProcessByte(uint8_t serial_in_byte, TUYA *tuyaStruct, void (*callback)())
 {
   if (serial_in_byte == 0x55) {            // Start TUYA Packet
-    Tuya.cmd_status = 1;
-    Tuya.buffer[Tuya.byte_counter++] = serial_in_byte;
-    Tuya.cmd_checksum += serial_in_byte;
-    //    Serial.println("0x55");
+    tuyaStruct->cmd_status = 1;
+    tuyaStruct->buffer[tuyaStruct->byte_counter++] = serial_in_byte;
+    tuyaStruct->cmd_checksum += serial_in_byte;
+//            Serial.println("0x55");
   }
-  else if (Tuya.cmd_status == 1 && serial_in_byte == 0xAA) { // Only packtes with header 0x55AA are valid
-    Tuya.cmd_status = 2;
+  else if (tuyaStruct->cmd_status == 1 && serial_in_byte == 0xAA) { // Only packtes with header 0x55AA are valid
+    tuyaStruct->cmd_status = 2;
 
-    Tuya.byte_counter = 0;
-    Tuya.buffer[Tuya.byte_counter++] = 0x55;
-    Tuya.buffer[Tuya.byte_counter++] = 0xAA;
-    Tuya.cmd_checksum = 0xFF;
-    //    Serial.println("cmd_status: 2");
+    tuyaStruct->byte_counter = 0;
+    tuyaStruct->buffer[tuyaStruct->byte_counter++] = 0x55;
+    tuyaStruct->buffer[tuyaStruct->byte_counter++] = 0xAA;
+    tuyaStruct->cmd_checksum = 0xFF;
+//            Serial.println("cmd_status: 2");
   }
-  else if (Tuya.cmd_status == 2) {
-    if (Tuya.byte_counter == 5) { // Get length of data
-      Tuya.cmd_status = 3;
-      Tuya.data_len = serial_in_byte;
-      //      Serial.println("cmd_status: 3, found length: " + String(Tuya.data_len));
+  else if (tuyaStruct->cmd_status == 2) {
+    if (tuyaStruct->byte_counter == 5) { // Get length of data
+      tuyaStruct->cmd_status = 3;
+      tuyaStruct->data_len = serial_in_byte;
+//            Serial.println("cmd_status: 3, found length: " + String(tuyaStruct->data_len));
     }
 
-    Tuya.cmd_checksum += serial_in_byte;
-    Tuya.buffer[Tuya.byte_counter++] = serial_in_byte;
+    tuyaStruct->cmd_checksum += serial_in_byte;
+    tuyaStruct->buffer[tuyaStruct->byte_counter++] = serial_in_byte;
   }
-  else if ((Tuya.cmd_status == 3) && (Tuya.byte_counter == (6 + Tuya.data_len)) && (Tuya.cmd_checksum == serial_in_byte)) { // Compare checksum and process packet
-    //      Serial.println("checksum statisfied");
+  else if ((tuyaStruct->cmd_status == 3) && (tuyaStruct->byte_counter == (6 + tuyaStruct->data_len)) && (tuyaStruct->cmd_checksum == serial_in_byte)) { // Compare checksum and process packet
+//        Serial.println("checksum statisfied");
 
-    Tuya.buffer[Tuya.byte_counter++] = serial_in_byte;
+    tuyaStruct->buffer[tuyaStruct->byte_counter++] = serial_in_byte;
 
     uint16_t DataVal = 0;
     uint8_t dpId = 0;
     uint8_t dpDataType = 0;
     char DataStr[13];
 
-    //      char hex_char[setCommandPacketLength(Tuya.data_len)*3];
-    //      Serial.println(ToHex_P((unsigned char*)Tuya.buffer, setCommandPacketLength(Tuya.data_len), hex_char, sizeof(hex_char)));
+//    char hex_char[setCommandPacketLength(tuyaStruct->data_len) * 3];
+//    Serial.println(ToHex_P((unsigned char*)tuyaStruct->buffer, setCommandPacketLength(tuyaStruct->data_len), hex_char, sizeof(hex_char)));
 
-    if (TUYA_CMD_HEARTBEAT == Tuya.buffer[3]) {
-      uint8_t payload_buffer[] = {0x01};
-      Serial.println("respond to heartbeat");
-      TuyaSendResponse(TUYA_CMD_HEARTBEAT, payload_buffer, 1);
-    } else {
-      Serial.println("fire lora packet");
-      LoRa.beginPacket();
-      LoRa.write(Tuya.buffer, setCommandPacketLength(Tuya.data_len));
-      LoRa.endPacket();
-    }
+    (callback)();
 
-    Tuya.byte_counter = 0;
-    Tuya.cmd_status = 0;
-    Tuya.cmd_checksum = 0;
-    Tuya.data_len = 0;
+    tuyaStruct->byte_counter = 0;
+    tuyaStruct->cmd_status = 0;
+    tuyaStruct->cmd_checksum = 0;
+    tuyaStruct->data_len = 0;
   }                                                    // read additional packets from TUYA
-  else if (Tuya.byte_counter < TUYA_BUFFER_SIZE - 1) { // add char to string if it still fits
-    //      Serial.println("Tuya.cmd_status" + String(Tuya.cmd_status) + " Tuya.byte_counter: " + String(Tuya.byte_counter) + " Tuya.data_len: " + String(Tuya.data_len) + " serial_in_byte:" + serial_in_byte);
-    //      Serial.println("reading more buffer");
-    Tuya.buffer[Tuya.byte_counter++] = serial_in_byte;
-    Tuya.cmd_checksum += serial_in_byte;
+  else if (tuyaStruct->byte_counter < TUYA_BUFFER_SIZE - 1) { // add char to string if it still fits
+//        Serial.println("tuyaStruct.cmd_status" + String(tuyaStruct->cmd_status) + " tuyaStruct.byte_counter: " + String(tuyaStruct->byte_counter) + " tuyaStruct->data_len: " + String(tuyaStruct->data_len) + " serial_in_byte:" + serial_in_byte);
+//        Serial.println("reading more buffer");
+    tuyaStruct->buffer[tuyaStruct->byte_counter++] = serial_in_byte;
+    tuyaStruct->cmd_checksum += serial_in_byte;
   } else {
-    //      Serial.println("resetting");
-    Tuya.byte_counter = 0;
-    Tuya.cmd_status = 0;
-    Tuya.cmd_checksum = 0;
-    Tuya.data_len = 0;
+    Serial.println("resetting");
+    tuyaStruct->byte_counter = 0;
+    tuyaStruct->cmd_status = 0;
+    tuyaStruct->cmd_checksum = 0;
+    tuyaStruct->data_len = 0;
   }
+}
+
+void onTuyaSerialMessage() {
+  if (TUYA_CMD_HEARTBEAT == TuyaSerialStruct.buffer[3]) {
+    uint8_t payload_buffer[] = {0x01};
+    Serial.println("respond to heartbeat");
+    TuyaSendResponse(TUYA_CMD_HEARTBEAT, payload_buffer, 1);
+  } else {
+    Serial.println("fire lora packet");
+    for (int i = 1; i <= 5; i++) {
+      LoRa.beginPacket();
+      LoRa.write(TuyaSerialStruct.buffer, setCommandPacketLength(TuyaSerialStruct.data_len));
+      LoRa.endPacket();
+      delay(300);
+    }
+  }
+}
+
+void onTuyaLoraMessage() {
+  Serial.println("received tuya lora packet");
+  char hex_char[setCommandPacketLength(TuyaLoraStruct.data_len) * 3];
+  Serial.println(ToHex_P((unsigned char*)TuyaLoraStruct.buffer, setCommandPacketLength(TuyaLoraStruct.data_len), hex_char, sizeof(hex_char)));
+  TuyaSerial.write(TuyaLoraStruct.buffer, setCommandPacketLength(TuyaLoraStruct.data_len));
 }
 
 void onReceive(int packetSize) {
   if (packetSize == 0) return;
 
-  int recipient = LoRa.read();
-  byte sender = LoRa.read();
-  uint8_t dataType = LoRa.read();
-  uint8_t dataVal1 = LoRa.read();
-  uint8_t dataVal2 = LoRa.read();
-  uint16_t dataVal = dataVal1 << 8 | dataVal2;
+  Serial.println("RSSI: " + String(LoRa.packetRssi()));
+  Serial.println("Snr: " + String(LoRa.packetSnr()));
+  Serial.println("Packet Size: " + String(packetSize));
 
-  String incoming = "";                 // payload of packet
-
-  while (LoRa.available()) {            // can't use readString() in callback, so
-    incoming += (char)LoRa.read();      // add bytes one by one
+  String str = "RSSI: " + String(LoRa.packetRssi()) + " Snr: " + String(LoRa.packetSnr());
+  TuyaSendString(11, str.c_str());
+  while (LoRa.available()) {
+    ProcessByte(LoRa.read(), &TuyaLoraStruct, onTuyaLoraMessage);
   }
 }
 
@@ -170,7 +198,8 @@ void onReceive(int packetSize) {
 void setup() {
   Serial.begin(9600);
   TuyaSerial.begin(9600);
-  Tuya.buffer = (char*)(malloc(TUYA_BUFFER_SIZE));
+  TuyaSerialStruct.buffer = (char*)(malloc(TUYA_BUFFER_SIZE));
+  TuyaLoraStruct.buffer = (char*)(malloc(TUYA_BUFFER_SIZE));
 
   LoRa.setPins(SS, RST, DI0);
 
@@ -184,7 +213,7 @@ void setup() {
 
 void loop() {
   if (TuyaSerial.available()) {
-    ProcessByte(TuyaSerial.read());
+    ProcessByte(TuyaSerial.read(), &TuyaSerialStruct, onTuyaSerialMessage);
   }
   onReceive(LoRa.parsePacket());
 }
